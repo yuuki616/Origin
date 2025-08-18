@@ -81,9 +81,10 @@ AMLState aml_state=AML_OFF;
 int    lastTimerTick=0;
 
 // スプレッド配列
-#define SPREAD_HISTORY 3600
-int Spreads[SPREAD_HISTORY];
+int SpreadHistory=0;
+int Spreads[];
 int SpreadIndex=0;
+int SpreadCount=0;
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -95,7 +96,9 @@ int OnInit()
    MagicGrid = MagicBase + 10 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
    SpreadMedian = MarketInfo(Symbol(),MODE_SPREAD);
-   Step = CalcStep(SpreadMedian);
+   Step = CalcStep(SpreadMedian / Pip());
+   SpreadHistory = (int)MathMax(1, (MedianWindow_min*60*1000)/TimerInterval_ms);
+   ArrayResize(Spreads, SpreadHistory);
    Print("Init: Step=",Step," Pip=",Pip());
    EventSetMillisecondTimer(TimerInterval_ms);
    return(INIT_SUCCEEDED);
@@ -114,7 +117,7 @@ void OnTimer()
   {
    int spread = (int)((Ask-Bid)/Point);
    UpdateSpreadMedian(spread);
-   Step = CalcStep(spread);
+   Step = CalcStep(spread / Pip());
 
    if(!SpreadGate(spread)) return;
    if(!TimeGate()) return;
@@ -138,7 +141,6 @@ void PlaceGridOrders()
    int total=buys+sells;
    if(total>=MaxUnits) return;
 
-   double spread = (Ask-Bid)/Point;
    double stepPoints = Step*Pip();
 
    for(int level=1; level<=MaxLayers && total<MaxUnits; level++)
@@ -223,10 +225,11 @@ bool TimeGate()
 //+------------------------------------------------------------------+
 void UpdateSpreadMedian(int spread)
   {
+   if(SpreadHistory<=0) return;
    Spreads[SpreadIndex]=spread;
-   SpreadIndex=(SpreadIndex+1)%SPREAD_HISTORY;
-   int n = MathMin(SPREAD_HISTORY,SpreadIndex);
-   SpreadMedian = ArrayMedian(Spreads,n);
+   SpreadIndex=(SpreadIndex+1)%SpreadHistory;
+   if(SpreadCount<SpreadHistory) SpreadCount++;
+   SpreadMedian = ArrayMedian(Spreads,SpreadCount);
   }
 
 //+------------------------------------------------------------------+
@@ -246,11 +249,10 @@ double ArrayMedian(int &arr[],int n)
 //+------------------------------------------------------------------+
 //| Step計算                                                         |
 //+------------------------------------------------------------------+
-double CalcStep(int spread)
+double CalcStep(double spread_pips)
   {
-   double p=spread*Point;
-   double step = StepFactor*MathMax(spread,PipsFrom(SpreadFloor));
-   double minStep = 1.5*spread;
+   double step = StepFactor*MathMax(spread_pips,SpreadFloor);
+   double minStep = 1.5*spread_pips;
    if(step<minStep) step=minStep;
    return(step);
   }
