@@ -83,12 +83,9 @@ double FreezeLevel=0;
 double LotStep=0;
 double MinLot=0;
 int    lastSpread=0;          // 直近スプレッド(ポイント)
-
-// スプレッド配列
-int SpreadHistory=0;
-int Spreads[];
-int SpreadIndex=0;
-int SpreadCount=0;
+// スプレッド履歴
+int      Spreads[];
+datetime SpreadTimes[];
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -99,10 +96,10 @@ int OnInit()
    MagicGrid = MagicBase + 10 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
    lastSpread = (int)MarketInfo(Symbol(),MODE_SPREAD);
-   SpreadHistory = (int)MathMax(1, (MedianWindow_min*60*1000)/TimerInterval_ms);
-   ArrayResize(Spreads, SpreadHistory);
-   for(int i=0;i<SpreadHistory;i++) Spreads[i]=lastSpread;
-   SpreadCount = SpreadHistory;
+   ArrayResize(Spreads,1);
+   ArrayResize(SpreadTimes,1);
+   Spreads[0] = lastSpread;
+   SpreadTimes[0] = TimeCurrent();
    SpreadMedian = lastSpread;
    double spread_pips_init = lastSpread * Point / Pip();
    Step = CalcStep(spread_pips_init);
@@ -313,11 +310,30 @@ bool TimeGate()
 //+------------------------------------------------------------------+
 void UpdateSpreadMedian(int spread)
   {
-   if(SpreadHistory<=0) return;
-   Spreads[SpreadIndex]=spread;
-   SpreadIndex=(SpreadIndex+1)%SpreadHistory;
-   if(SpreadCount<SpreadHistory) SpreadCount++;
-   SpreadMedian = ArrayMedian(Spreads,SpreadCount);
+   datetime now = TimeCurrent();
+   int n = ArraySize(Spreads);
+   ArrayResize(Spreads, n+1);
+   ArrayResize(SpreadTimes, n+1);
+   Spreads[n] = spread;
+   SpreadTimes[n] = now;
+
+   datetime cutoff = now - MedianWindow_min*60;
+   int start=0;
+   while(start < ArraySize(SpreadTimes) && SpreadTimes[start] < cutoff) start++;
+   if(start>0)
+     {
+      int newSize = ArraySize(Spreads) - start;
+      for(int i=0;i<newSize;i++)
+        {
+         Spreads[i] = Spreads[i+start];
+         SpreadTimes[i] = SpreadTimes[i+start];
+        }
+      ArrayResize(Spreads,newSize);
+      ArrayResize(SpreadTimes,newSize);
+     }
+   int m = ArraySize(Spreads);
+   if(m<=0) { SpreadMedian=spread; return; }
+   SpreadMedian = ArrayMedian(Spreads,m);
   }
 
 //+------------------------------------------------------------------+
