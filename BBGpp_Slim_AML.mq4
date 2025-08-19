@@ -79,6 +79,10 @@ Regime regime=REGIME_NORMAL;
 Cycle  cycle=CYCLE_RUNNING;
 AMLState aml_state=AML_OFF;
 int    lastTimerTick=0;
+double StopLevel=0;
+double FreezeLevel=0;
+double LotStep=0;
+double MinLot=0;
 
 // スプレッド配列
 int SpreadHistory=0;
@@ -97,9 +101,14 @@ int OnInit()
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
    SpreadMedian = MarketInfo(Symbol(),MODE_SPREAD);
    Step = CalcStep(SpreadMedian / Pip());
+   StopLevel  = MarketInfo(Symbol(),MODE_STOPLEVEL)  * Point;
+   FreezeLevel= MarketInfo(Symbol(),MODE_FREEZELEVEL)* Point;
+   LotStep    = MarketInfo(Symbol(),MODE_LOTSTEP);
+   MinLot     = MarketInfo(Symbol(),MODE_MINLOT);
    SpreadHistory = (int)MathMax(1, (MedianWindow_min*60*1000)/TimerInterval_ms);
    ArrayResize(Spreads, SpreadHistory);
-   Print("Init: Step=",Step," Pip=",Pip());
+   Print("Init: Step=",Step," Pip=",Pip()," StopLevel=",StopLevel/Point,
+         " FreezeLevel=",FreezeLevel/Point);
    EventSetMillisecondTimer(TimerInterval_ms);
    return(INIT_SUCCEEDED);
   }
@@ -183,9 +192,23 @@ bool FindPendingPrice(double price,int type)
 //+------------------------------------------------------------------+
 bool SendPending(int type,double price)
   {
-   double lot = Lot_U;
-   lot = NormalizeDouble(lot,2);
+   double lot = NormalizeLot(Lot_U);
    price = NormalizeDouble(price,Digits);
+
+   double cur   = (type==OP_BUYLIMIT)?Bid:Ask;
+   double diff  = MathAbs(cur-price);
+   if(diff<StopLevel)
+     {
+      if(type==OP_BUYLIMIT) price = NormalizeDouble(cur - StopLevel,Digits);
+      else                  price = NormalizeDouble(cur + StopLevel,Digits);
+      diff = MathAbs(cur-price);
+      if(diff<FreezeLevel)
+        {
+         Print("SendPending postponed: within FreezeLevel");
+         return(false);
+        }
+     }
+
    int slippage = (int)MaxSlippage_pips;
    int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,CommentTag,MagicGrid,0,clrAqua);
    if(ticket<0)
@@ -272,6 +295,16 @@ double Pip()
 double PipsFrom(double p)
   {
    return(p*Pip());
+  }
+
+//+------------------------------------------------------------------+
+//| Lot正規化                                                        |
+//+------------------------------------------------------------------+
+double NormalizeLot(double lot)
+  {
+   double l = MathCeil(lot/LotStep)*LotStep;
+   if(l<MinLot) l=MinLot;
+   return(NormalizeDouble(l,2));
   }
 
 //+------------------------------------------------------------------+
