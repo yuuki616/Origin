@@ -109,6 +109,7 @@ void RestartCycle();
 string BuildComment(string role,int idx);
 void RegisterClosure(int ticket,double spreadClose=-1);
 void UpdateManualClosures();
+bool FreeMarginGate();
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -195,6 +196,9 @@ void OnTimer()
       if(pending>0) CancelPendingOrders();
       return;
      }
+
+  if(!FreeMarginGate())
+     return;
 
   int allowedPending = MaxUnits - held;
   if(pending>allowedPending)
@@ -498,6 +502,24 @@ void RestartCycle()
      }
    Step = stepMult * CalcStep(lastSpreadPips);
    cycle = CYCLE_RUNNING;
+  }
+
+//+------------------------------------------------------------------+
+//| FreeMarginGate                                                   |
+//+------------------------------------------------------------------+
+bool FreeMarginGate()
+  {
+   double equity = AccountEquity();
+   if(equity<=0) return(true);
+   double ratio = 100.0 * AccountFreeMargin() / equity;
+   if(ratio < 110.0)
+     {
+      CancelPendingOrders();
+      return(false);
+     }
+   if(ratio < 120.0)
+     return(false);
+   return(true);
   }
 
 //+------------------------------------------------------------------+
