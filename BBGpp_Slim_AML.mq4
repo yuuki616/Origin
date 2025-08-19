@@ -105,11 +105,11 @@ int    microLifoStreak=0;     // Micro-LIFO 連続回数
 
 // プロトタイプ
 void CloseOneOrder();
-bool CloseWithRetry(int ticket);
+bool CloseWithRetry(int ticket,bool addCb);
 bool CheckExitConditions();
 void RestartCycle();
 string BuildComment(string role,int idx);
-void RegisterClosure(int ticket,double spreadClose=-1);
+void RegisterClosure(int ticket,double spreadClose=-1,bool addCb=false);
 void UpdateManualClosures();
 bool FreeMarginGate();
 bool FindPendingLevel(int level,int type);
@@ -178,7 +178,12 @@ void OnTimer()
 
    if(cycle==CYCLE_CLOSING)
      {
-      if(held>0 || pending>0)
+      if(pending>0)
+        {
+         CancelPendingOrders();
+         return;
+        }
+      if(held>0)
         {
          CloseOneOrder();
          return;
@@ -189,7 +194,6 @@ void OnTimer()
 
    if(CheckExitConditions())
      {
-      CancelPendingOrders(1000);
       cycle = CYCLE_CLOSING;
       return;
      }
@@ -224,7 +228,11 @@ void OnTimer()
        reanchorStart = TimeCurrent();
      else if(TimeCurrent() - reanchorStart >= Reanchor_Hold_min*60)
        {
-        CancelPendingOrders(1000);
+        if(pending>0)
+          {
+           CancelPendingOrders();
+           return;
+          }
         AnchorPrice = NormalizeDouble(mid,Digits);
         reanchorStart = 0;
         Print("ReAnchor");
@@ -327,13 +335,13 @@ void CloseOneOrder()
          if(p>best){ best=p; bestTicket=OrderTicket(); }
         }
      }
-   if(bestTicket!=-1) CloseWithRetry(bestTicket);
+   if(bestTicket!=-1) CloseWithRetry(bestTicket,false);
   }
 
 //+------------------------------------------------------------------+
 //| OrderClose リトライ                                               |
 //+------------------------------------------------------------------+
-bool CloseWithRetry(int ticket)
+bool CloseWithRetry(int ticket,bool addCb)
   {
    if(!OpsAllowed()) return(false);
    for(int attempt=0; attempt<Retry_Max; attempt++)
@@ -346,7 +354,7 @@ bool CloseWithRetry(int ticket)
          if(OrderClose(ticket,lot,price,slippage,clrRed))
            {
             double spreadClose = (Ask-Bid)/Pip();
-            RegisterClosure(ticket,spreadClose);
+            RegisterClosure(ticket,spreadClose,addCb);
             return(true);
            }
         }
@@ -359,7 +367,7 @@ bool CloseWithRetry(int ticket)
 //+------------------------------------------------------------------+
 //| 決済処理の登録（コスト/CB）                                       |
 //+------------------------------------------------------------------+
-void RegisterClosure(int ticket,double spreadClose)
+void RegisterClosure(int ticket,double spreadClose,bool addCb)
   {
    if(!OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY)) return;
    double sc = spreadClose;
@@ -368,7 +376,7 @@ void RegisterClosure(int ticket,double spreadClose)
    double comm = MathAbs(OrderCommission());
    cycleCost  += (sc + 0.1) * pv + comm;
    double net = OrderProfit() + OrderSwap() + OrderCommission();
-   if(net>0)
+   if(addCb && net>0)
       CycleBuffer += Tau_CB * net;
    datetime ct = OrderCloseTime();
    if(ct>lastHistoryTime) lastHistoryTime = ct;
@@ -385,7 +393,7 @@ void UpdateManualClosures()
       if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
       datetime ct = OrderCloseTime();
       if(ct<=lastHistoryTime || ct<cycleStartTime) break;
-      RegisterClosure(OrderTicket(),-1);
+      RegisterClosure(OrderTicket(),-1,false);
      }
   }
 
@@ -452,7 +460,7 @@ bool TryMicroLIFO(double spread_pips)
       return(false);
    if(dir==microLifoDir) microLifoStreak++;
    else { microLifoDir=dir; microLifoStreak=1; }
-   return CloseWithRetry(ticket);
+   return CloseWithRetry(ticket,true);
   }
 
 //+------------------------------------------------------------------+
