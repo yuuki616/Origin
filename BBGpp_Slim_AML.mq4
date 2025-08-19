@@ -94,6 +94,7 @@ double stepMult=1.0;
 int    stepExpandCount=0;
 double cycleStartEquity=0;
 datetime cycleStartTime=0;
+double cycleCost=0; // サイクル内の決済コスト累計
 
 // プロトタイプ
 void CloseOneOrder();
@@ -125,6 +126,7 @@ int OnInit()
    EventSetMillisecondTimer(TimerInterval_ms);
    cycleStartEquity = AccountEquity();
    cycleStartTime   = TimeCurrent();
+   cycleCost        = 0;
    return(INIT_SUCCEEDED);
   }
 
@@ -294,7 +296,16 @@ bool CloseWithRetry(int ticket)
          double lot = OrderLots();
          double price = (OrderType()==OP_BUY)?Bid:Ask;
          int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
-         if(OrderClose(ticket,lot,price,slippage,clrRed)) return(true);
+         if(OrderClose(ticket,lot,price,slippage,clrRed))
+           {
+            double spreadClose = (Ask-Bid)/Pip();
+            double pv = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
+            double comm = 0;
+            if(OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY))
+               comm = MathAbs(OrderCommission());
+            cycleCost += (spreadClose + 0.1) * pv + comm;
+            return(true);
+           }
         }
       Print("OrderClose failed: ",GetLastError());
       Sleep(Backoff_ms * (1<<attempt));
@@ -396,6 +407,7 @@ bool CheckExitConditions()
    double equity = AccountEquity();
    double profit = equity - cycleStartEquity;
    double ddPct = 100.0 * (cycleStartEquity - equity) / cycleStartEquity;
+   if(cycleCost>0 && profit >= cycleCost*BasketTP_costMult) return(true);
    if(profit >= CycleTP_money) return(true);
    if(ddPct  >= MaxDD_pct)     return true;
    if(TimeCurrent() - cycleStartTime >= CycleTimeLimit_min*60) return(true);
@@ -408,13 +420,14 @@ bool CheckExitConditions()
 void RestartCycle()
   {
    AnchorPrice = NormalizeDouble((Ask+Bid)/2,Digits);
-   cycleStartEquity = AccountEquity();
-   cycleStartTime   = TimeCurrent();
-   CycleID++;
-   if(stepExpandCount < 2)
-     {
-      stepMult *= 1.3;
-      stepExpandCount++;
+  cycleStartEquity = AccountEquity();
+  cycleStartTime   = TimeCurrent();
+  cycleCost        = 0;
+  CycleID++;
+  if(stepExpandCount < 2)
+    {
+     stepMult *= 1.3;
+     stepExpandCount++;
      }
    Step = stepMult * CalcStep(lastSpreadPips);
    cycle = CYCLE_RUNNING;
