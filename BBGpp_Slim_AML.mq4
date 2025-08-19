@@ -139,35 +139,75 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void PlaceGridOrders()
   {
-   int buys=0,sells=0;
+   int held=0,pending=0;
+   // 保有本数と保留注文数をカウント
    for(int i=OrdersTotal()-1;i>=0;i--)
      {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
       if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
-      if(OrderType()==OP_BUY) buys++;
-      if(OrderType()==OP_SELL) sells++;
+      int type=OrderType();
+      if(type==OP_BUY || type==OP_SELL) held++;
+      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT) pending++;
      }
-   int total=buys+sells;
-   if(total>=MaxUnits) return;
+   // 保有が上限以上なら保留を全取消して終了
+   if(held>=MaxUnits)
+     {
+      CancelPendingOrders();
+      return;
+     }
+   int allowedPending = MaxUnits - held;
+   if(pending>allowedPending)
+     {
+      CancelPendingOrders(pending-allowedPending);
+      pending=0;
+      // 再カウント
+      for(int j=OrdersTotal()-1;j>=0;j--)
+        {
+         if(!OrderSelect(j,SELECT_BY_POS,MODE_TRADES)) continue;
+         if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+         int t=OrderType();
+         if(t==OP_BUYLIMIT || t==OP_SELLLIMIT) pending++;
+        }
+     }
+   if(pending>=allowedPending) return;
 
    double stepPoints = Step*Pip();
-
-   for(int level=1; level<=MaxLayers && total<MaxUnits; level++)
+   for(int level=1; level<=MaxLayers && pending<allowedPending; level++)
      {
       double buyPrice = NormalizeDouble(AnchorPrice - level*stepPoints, Digits);
       double sellPrice= NormalizeDouble(AnchorPrice + level*stepPoints, Digits);
-      bool needBuy = (buyPrice < Bid && FindPendingPrice(buyPrice,OP_BUYLIMIT)==false);
-      bool needSell= (sellPrice> Ask && FindPendingPrice(sellPrice,OP_SELLLIMIT)==false);
+      bool needBuy = (buyPrice < Bid && !FindPendingPrice(buyPrice,OP_BUYLIMIT));
+      bool needSell= (sellPrice> Ask && !FindPendingPrice(sellPrice,OP_SELLLIMIT));
 
-      if(needBuy && total<MaxUnits)
+      if(needBuy && pending<allowedPending)
         {
          SendPending(OP_BUYLIMIT,buyPrice);
          return;
         }
-      if(needSell && total<MaxUnits)
+      if(needSell && pending<allowedPending)
         {
          SendPending(OP_SELLLIMIT,sellPrice);
          return;
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 保留注文の整理                                                    |
+//+------------------------------------------------------------------+
+void CancelPendingOrders(int count=2147483647)
+  {
+   for(int i=OrdersTotal()-1; i>=0 && count>0; i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      int type=OrderType();
+      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT)
+        {
+         int ticket=OrderTicket();
+         if(!OrderDelete(ticket))
+            Print("OrderDelete failed: ",GetLastError());
+         count--;
         }
      }
   }
