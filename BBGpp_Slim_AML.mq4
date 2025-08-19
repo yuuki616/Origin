@@ -82,6 +82,7 @@ double StopLevel=0;
 double FreezeLevel=0;
 double LotStep=0;
 double MinLot=0;
+int    lastSpread=0;          // 直近スプレッド(ポイント)
 
 // スプレッド配列
 int SpreadHistory=0;
@@ -97,15 +98,18 @@ int OnInit()
    symbolHash = SymbolHash(Symbol());
    MagicGrid = MagicBase + 10 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
-   SpreadMedian = MarketInfo(Symbol(),MODE_SPREAD);
-   double spread_pips_init = SpreadMedian * Point / Pip();
+   lastSpread = (int)MarketInfo(Symbol(),MODE_SPREAD);
+   SpreadHistory = (int)MathMax(1, (MedianWindow_min*60*1000)/TimerInterval_ms);
+   ArrayResize(Spreads, SpreadHistory);
+   for(int i=0;i<SpreadHistory;i++) Spreads[i]=lastSpread;
+   SpreadCount = SpreadHistory;
+   SpreadMedian = lastSpread;
+   double spread_pips_init = lastSpread * Point / Pip();
    Step = CalcStep(spread_pips_init);
    StopLevel  = MarketInfo(Symbol(),MODE_STOPLEVEL)  * Point;
    FreezeLevel= MarketInfo(Symbol(),MODE_FREEZELEVEL)* Point;
    LotStep    = MarketInfo(Symbol(),MODE_LOTSTEP);
    MinLot     = MarketInfo(Symbol(),MODE_MINLOT);
-   SpreadHistory = (int)MathMax(1, (MedianWindow_min*60*1000)/TimerInterval_ms);
-   ArrayResize(Spreads, SpreadHistory);
    Print("Init: Step=",Step," Pip=",Pip()," StopLevel=",StopLevel/Point,
          " FreezeLevel=",FreezeLevel/Point);
    EventSetMillisecondTimer(TimerInterval_ms);
@@ -119,16 +123,23 @@ void OnDeinit(const int reason)
   }
 
 //+------------------------------------------------------------------+
+//| ティック受信                                                     |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+   lastSpread = (int)((Ask-Bid)/Point);
+   UpdateSpreadMedian(lastSpread);
+  }
+
+//+------------------------------------------------------------------+
 //| タイマー実行                                                     |
 //+------------------------------------------------------------------+
 void OnTimer()
   {
-   int spread = (int)((Ask-Bid)/Point);
-   UpdateSpreadMedian(spread);
-   double spread_pips = spread * Point / Pip();
+   double spread_pips = lastSpread * Point / Pip();
    Step = CalcStep(spread_pips);
 
-   if(!SpreadGate(spread)) return;
+   if(!SpreadGate(lastSpread)) return;
    if(!TimeGate()) return;
 
    PlaceGridOrders();
@@ -205,8 +216,7 @@ void CancelPendingOrders(int count=2147483647)
       if(type==OP_BUYLIMIT || type==OP_SELLLIMIT)
         {
          int ticket=OrderTicket();
-         if(!OrderDelete(ticket))
-            Print("OrderDelete failed: ",GetLastError());
+         DeleteWithRetry(ticket);
          count--;
         }
      }
@@ -250,13 +260,28 @@ bool SendPending(int type,double price)
      }
 
    int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
-   int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,CommentTag,MagicGrid,0,clrAqua);
-   if(ticket<0)
+   for(int attempt=0; attempt<Retry_Max; attempt++)
      {
+      int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,CommentTag,MagicGrid,0,clrAqua);
+      if(ticket>=0) return(true);
       Print("OrderSend failed: ",GetLastError());
-      return(false);
+      Sleep(Backoff_ms * (1<<attempt));
      }
-   return(true);
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| OrderDelete リトライ                                              |
+//+------------------------------------------------------------------+
+bool DeleteWithRetry(int ticket)
+  {
+   for(int attempt=0; attempt<Retry_Max; attempt++)
+     {
+      if(OrderDelete(ticket)) return(true);
+      Print("OrderDelete failed: ",GetLastError());
+      Sleep(Backoff_ms * (1<<attempt));
+     }
+   return(false);
   }
 
 //+------------------------------------------------------------------+
