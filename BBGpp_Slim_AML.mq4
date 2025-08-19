@@ -98,6 +98,7 @@ int    stepExpandCount=0;
 double cycleStartEquity=0;
 datetime cycleStartTime=0;
 double cycleCost=0; // サイクル内の決済コスト累計
+datetime lastHistoryTime=0;
 
 // プロトタイプ
 void CloseOneOrder();
@@ -105,6 +106,8 @@ bool CloseWithRetry(int ticket);
 bool CheckExitConditions();
 void RestartCycle();
 string BuildComment(string role,int idx);
+void RegisterClosure(int ticket,double spreadClose=-1);
+void UpdateManualClosures();
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -134,6 +137,8 @@ int OnInit()
    cycleStartEquity = AccountEquity();
    cycleStartTime   = TimeCurrent();
    cycleCost        = 0;
+   CycleBuffer      = 0;
+   lastHistoryTime  = cycleStartTime;
    return(INIT_SUCCEEDED);
   }
 
@@ -159,6 +164,8 @@ void OnTimer()
   {
    double spread_pips = lastSpreadPips;
    Step = stepMult * CalcStep(spread_pips);
+
+   UpdateManualClosures();
 
    int held=0,pending=0;
    CountOrders(held,pending);
@@ -306,11 +313,7 @@ bool CloseWithRetry(int ticket)
          if(OrderClose(ticket,lot,price,slippage,clrRed))
            {
             double spreadClose = (Ask-Bid)/Pip();
-            double pv = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
-            double comm = 0;
-            if(OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY))
-               comm = MathAbs(OrderCommission());
-            cycleCost += (spreadClose + 0.1) * pv + comm;
+            RegisterClosure(ticket,spreadClose);
             return(true);
            }
         }
@@ -318,6 +321,38 @@ bool CloseWithRetry(int ticket)
       Sleep(Backoff_ms * (1<<attempt));
      }
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| 決済処理の登録（コスト/CB）                                       |
+//+------------------------------------------------------------------+
+void RegisterClosure(int ticket,double spreadClose)
+  {
+   if(!OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY)) return;
+   double sc = spreadClose;
+   if(sc<0) sc = lastSpreadPips;
+   double pv = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
+   double comm = MathAbs(OrderCommission());
+   cycleCost += (sc + 0.1) * pv + comm;
+   double net = OrderProfit() + OrderSwap() + OrderCommission();
+   CycleBuffer += Tau_CB * net;
+   datetime ct = OrderCloseTime();
+   if(ct>lastHistoryTime) lastHistoryTime = ct;
+  }
+
+//+------------------------------------------------------------------+
+//| 手動クローズの検出                                               |
+//+------------------------------------------------------------------+
+void UpdateManualClosures()
+  {
+   for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_HISTORY)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      datetime ct = OrderCloseTime();
+      if(ct<=lastHistoryTime || ct<cycleStartTime) break;
+      RegisterClosure(OrderTicket(),-1);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -430,6 +465,8 @@ void RestartCycle()
   cycleStartEquity = AccountEquity();
   cycleStartTime   = TimeCurrent();
   cycleCost        = 0;
+  CycleBuffer      = 0;
+  lastHistoryTime  = cycleStartTime;
   CycleID++;
   if(stepExpandCount < 2)
     {
