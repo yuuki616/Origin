@@ -53,7 +53,7 @@ input int      Retry_Max          = 5;
 input int      Backoff_ms         = 250;
 input double   MaxSlippage_pips   = 0.5;
 input int      MagicBase          = 246800;
-input string   CommentTag         = "BBG++";
+input string   CommentTag         = "BBG+";
 input bool     Persist_Enable     = true;
 input int      OpsPerMinute_SoftCap = 12;
 
@@ -110,6 +110,7 @@ string BuildComment(string role,int idx);
 void RegisterClosure(int ticket,double spreadClose=-1);
 void UpdateManualClosures();
 bool FreeMarginGate();
+bool FindPendingLevel(int level,int type);
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -248,8 +249,8 @@ void PlaceGridOrders(int held,int pending)
      {
       double buyPrice = NormalizeDouble(AnchorPrice - level*stepPoints, Digits);
       double sellPrice= NormalizeDouble(AnchorPrice + level*stepPoints, Digits);
-      bool needBuy = (buyPrice < Ask && !FindPendingPrice(buyPrice,OP_BUYLIMIT));
-      bool needSell= (sellPrice> Bid && !FindPendingPrice(sellPrice,OP_SELLLIMIT));
+      bool needBuy = (buyPrice < Ask && !FindPendingLevel(level,OP_BUYLIMIT));
+      bool needSell= (sellPrice> Bid && !FindPendingLevel(level,OP_SELLLIMIT));
 
       if(needBuy && pending<allowedPending)
         {
@@ -383,15 +384,16 @@ void UpdateManualClosures()
   }
 
 //+------------------------------------------------------------------+
-//| 指定価格の保留注文有無                                            |
+//| 指定レベルの保留注文有無                                         |
 //+------------------------------------------------------------------+
-bool FindPendingPrice(double price,int type)
+bool FindPendingLevel(int level,int type)
   {
+   string needle = StringFormat("G-%d",level);
    for(int i=OrdersTotal()-1;i>=0;i--)
      {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
       if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
-      if(OrderType()==type && MathAbs(OrderOpenPrice()-price)<=Point)
+      if(OrderType()==type && StringFind(OrderComment(),needle)>=0)
          return(true);
      }
    return(false);
