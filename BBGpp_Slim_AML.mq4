@@ -67,7 +67,6 @@ enum AMLState{ AML_OFF=0, AML_LV1_ACTIVE, AML_LV2_ACTIVE, AML_COOLDOWN };
 //+------------------------------------------------------------------+
 //| グローバル変数                                                   |
 //+------------------------------------------------------------------+
-double PipValue;
 double Step;
 double SpreadMedian;
 double CycleBuffer=0;
@@ -95,12 +94,12 @@ int SpreadCount=0;
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   PipValue = MarketInfo(Symbol(),MODE_TICKVALUE);
    symbolHash = SymbolHash(Symbol());
    MagicGrid = MagicBase + 10 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
    SpreadMedian = MarketInfo(Symbol(),MODE_SPREAD);
-   Step = CalcStep(SpreadMedian / Pip());
+   double spread_pips_init = SpreadMedian * Point / Pip();
+   Step = CalcStep(spread_pips_init);
    StopLevel  = MarketInfo(Symbol(),MODE_STOPLEVEL)  * Point;
    FreezeLevel= MarketInfo(Symbol(),MODE_FREEZELEVEL)* Point;
    LotStep    = MarketInfo(Symbol(),MODE_LOTSTEP);
@@ -126,7 +125,8 @@ void OnTimer()
   {
    int spread = (int)((Ask-Bid)/Point);
    UpdateSpreadMedian(spread);
-   Step = CalcStep(spread / Pip());
+   double spread_pips = spread * Point / Pip();
+   Step = CalcStep(spread_pips);
 
    if(!SpreadGate(spread)) return;
    if(!TimeGate()) return;
@@ -162,12 +162,12 @@ void PlaceGridOrders()
       if(needBuy && total<MaxUnits)
         {
          SendPending(OP_BUYLIMIT,buyPrice);
-         total++;
+         return;
         }
       if(needSell && total<MaxUnits)
         {
          SendPending(OP_SELLLIMIT,sellPrice);
-         total++;
+         return;
         }
      }
   }
@@ -209,7 +209,7 @@ bool SendPending(int type,double price)
         }
      }
 
-   int slippage = (int)MaxSlippage_pips;
+   int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
    int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,CommentTag,MagicGrid,0,clrAqua);
    if(ticket<0)
      {
@@ -304,7 +304,8 @@ double NormalizeLot(double lot)
   {
    double l = MathCeil(lot/LotStep)*LotStep;
    if(l<MinLot) l=MinLot;
-   return(NormalizeDouble(l,2));
+   int lotDigits = (int)MathRound(-MathLog10(LotStep));
+   return(NormalizeDouble(l,lotDigits));
   }
 
 //+------------------------------------------------------------------+
