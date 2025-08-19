@@ -86,6 +86,9 @@ int    lastSpread=0;          // 直近スプレッド(ポイント)
 // スプレッド履歴
 int      Spreads[];
 datetime SpreadTimes[];
+// 操作回数制限
+datetime opsWindowStart=0;
+int      opsCount=0;
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -160,22 +163,14 @@ void PlaceGridOrders()
    // 保有が上限以上なら保留を全取消して終了
    if(held>=MaxUnits)
      {
-      CancelPendingOrders();
+      CancelPendingOrders(1);
       return;
      }
    int allowedPending = MaxUnits - held;
    if(pending>allowedPending)
      {
-      CancelPendingOrders(pending-allowedPending);
-      pending=0;
-      // 再カウント
-      for(int j=OrdersTotal()-1;j>=0;j--)
-        {
-         if(!OrderSelect(j,SELECT_BY_POS,MODE_TRADES)) continue;
-         if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
-         int t=OrderType();
-         if(t==OP_BUYLIMIT || t==OP_SELLLIMIT) pending++;
-        }
+      CancelPendingOrders(1);
+      return;
      }
    if(pending>=allowedPending) return;
 
@@ -201,9 +196,9 @@ void PlaceGridOrders()
   }
 
 //+------------------------------------------------------------------+
-//| 保留注文の整理                                                    |
+//| 保留注文の整理（最大count件）                                     |
 //+------------------------------------------------------------------+
-void CancelPendingOrders(int count=2147483647)
+void CancelPendingOrders(int count=1)
   {
    for(int i=OrdersTotal()-1; i>=0 && count>0; i--)
      {
@@ -239,6 +234,7 @@ bool FindPendingPrice(double price,int type)
 //+------------------------------------------------------------------+
 bool SendPending(int type,double price)
   {
+   if(!OpsAllowed()) return(false);
    double lot = NormalizeLot(Lot_U);
    price = NormalizeDouble(price,Digits);
 
@@ -272,6 +268,7 @@ bool SendPending(int type,double price)
 //+------------------------------------------------------------------+
 bool DeleteWithRetry(int ticket)
   {
+   if(!OpsAllowed()) return(false);
    for(int attempt=0; attempt<Retry_Max; attempt++)
      {
       if(OrderDelete(ticket)) return(true);
@@ -279,6 +276,27 @@ bool DeleteWithRetry(int ticket)
       Sleep(Backoff_ms * (1<<attempt));
      }
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| 操作回数制御                                                     |
+//+------------------------------------------------------------------+
+bool OpsAllowed()
+  {
+   datetime now = TimeCurrent();
+   if(now - opsWindowStart >= 60)
+     {
+      opsWindowStart = now;
+      opsCount = 0;
+     }
+   int cap = MathMin(OpsPerMinute_SoftCap, MaxUnits);
+   if(opsCount >= cap)
+     {
+      Print("OpsPerMinute soft cap reached: ",cap);
+      return(false);
+     }
+   opsCount++;
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -301,7 +319,13 @@ bool TimeGate()
    string d = TimeToString(now,TIME_DATE);
    datetime start = StringToTime(d+" "+SessionStart);
    datetime end   = StringToTime(d+" "+SessionEnd);
-   if(start<=now && now<end) return(true);
+   if(start<=end)
+     {
+      if(start<=now && now<end) return(true);
+      return(false);
+     }
+   // 日付を跨ぐセッション
+   if(now>=start || now<end) return(true);
    return(false);
   }
 
