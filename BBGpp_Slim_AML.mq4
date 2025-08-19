@@ -40,7 +40,9 @@ input double   Reanchor_DistMult  = 9;
 input int      Reanchor_Hold_min  = 30;
 
 input bool     AML_Enable         = true;
-input double   AML_Levels[2]      = {0.5,1.5};
+// AML の各段の距離倍率
+input double   AML_Level_LV1      = 0.5;
+input double   AML_Level_LV2      = 1.5;
 input double   AML_TP_SpreadMult  = 1.2;
 input int      AML_TTL_min        = 10;
 input int      AML_Whipsaw_Losses = 2;
@@ -626,7 +628,7 @@ bool HandleAML(double spread_pips,int held)
    if(dir<0 && mid>low)  return(false);
 
    if(!OpsAllowed()) return(false);
-   double level = AML_Levels[0];
+   double level = AML_Level_LV1;
    int type = (dir>0)?OP_BUYSTOP:OP_SELLSTOP;
    double price = (dir>0)?NormalizeDouble(Ask + level*Step*Pip(),Digits)
                         : NormalizeDouble(Bid - level*Step*Pip(),Digits);
