@@ -100,6 +100,8 @@ double cycleStartEquity=0;
 datetime cycleStartTime=0;
 double cycleCost=0; // サイクル内の決済コスト累計
 datetime lastHistoryTime=0;
+int    microLifoDir=0;        // Micro-LIFO 連続方向
+int    microLifoStreak=0;     // Micro-LIFO 連続回数
 
 // プロトタイプ
 void CloseOneOrder();
@@ -111,6 +113,7 @@ void RegisterClosure(int ticket,double spreadClose=-1);
 void UpdateManualClosures();
 bool FreeMarginGate();
 bool FindPendingLevel(int level,int type);
+bool TryMicroLIFO(double spread_pips);
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -192,11 +195,14 @@ void OnTimer()
      }
 
    // 保有が上限に達した場合は保留を整理（1ループ1アクション）
-   if(held>=MaxUnits)
-     {
-      if(pending>0) CancelPendingOrders();
-      return;
-     }
+  if(held>=MaxUnits)
+    {
+     if(pending>0) CancelPendingOrders();
+     return;
+    }
+
+  if(TryMicroLIFO(spread_pips))
+     return;
 
   if(!FreeMarginGate())
      return;
@@ -397,6 +403,56 @@ bool FindPendingLevel(int level,int type)
          return(true);
      }
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Micro-LIFO                                                       |
+//+------------------------------------------------------------------+
+bool TryMicroLIFO(double spread_pips)
+  {
+   if(!SpreadGate(spread_pips) || !TimeGate())
+     {
+      microLifoDir=0;
+      microLifoStreak=0;
+      return(false);
+     }
+
+   int    ticket   = -1;
+   int    dir      = 0;
+   datetime latest = 0;
+   double pv = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
+   double thresh = MicroLIFO_ProfitMult * spread_pips * pv;
+
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      int type = OrderType();
+      if(type!=OP_BUY && type!=OP_SELL) continue;
+      double net = OrderProfit()+OrderSwap()+OrderCommission();
+      if(net>=thresh)
+        {
+         datetime ot = OrderOpenTime();
+         if(ot>latest)
+           {
+            latest = ot;
+            ticket = OrderTicket();
+            dir    = (type==OP_BUY)?1:-1;
+           }
+        }
+     }
+
+   if(ticket<0)
+     {
+      microLifoDir=0;
+      microLifoStreak=0;
+      return(false);
+     }
+   if(dir==microLifoDir && microLifoStreak>=MicroLIFO_MaxStreak)
+      return(false);
+   if(dir==microLifoDir) microLifoStreak++;
+   else { microLifoDir=dir; microLifoStreak=1; }
+   return CloseWithRetry(ticket);
   }
 
 //+------------------------------------------------------------------+
