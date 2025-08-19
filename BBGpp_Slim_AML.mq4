@@ -179,17 +179,17 @@ void PlaceGridOrders()
      {
       double buyPrice = NormalizeDouble(AnchorPrice - level*stepPoints, Digits);
       double sellPrice= NormalizeDouble(AnchorPrice + level*stepPoints, Digits);
-      bool needBuy = (buyPrice < Bid && !FindPendingPrice(buyPrice,OP_BUYLIMIT));
-      bool needSell= (sellPrice> Ask && !FindPendingPrice(sellPrice,OP_SELLLIMIT));
+      bool needBuy = (buyPrice < Ask && !FindPendingPrice(buyPrice,OP_BUYLIMIT));
+      bool needSell= (sellPrice> Bid && !FindPendingPrice(sellPrice,OP_SELLLIMIT));
 
       if(needBuy && pending<allowedPending)
         {
-         SendPending(OP_BUYLIMIT,buyPrice);
+         SendPending(OP_BUYLIMIT,buyPrice,level);
          return;
         }
       if(needSell && pending<allowedPending)
         {
-         SendPending(OP_SELLLIMIT,sellPrice);
+         SendPending(OP_SELLLIMIT,sellPrice,level);
          return;
         }
      }
@@ -232,13 +232,13 @@ bool FindPendingPrice(double price,int type)
 //+------------------------------------------------------------------+
 //| Pending注文送信                                                  |
 //+------------------------------------------------------------------+
-bool SendPending(int type,double price)
+bool SendPending(int type,double price,int level)
   {
    if(!OpsAllowed()) return(false);
    double lot = NormalizeLot(Lot_U);
    price = NormalizeDouble(price,Digits);
 
-   double cur   = (type==OP_BUYLIMIT)?Bid:Ask;
+   double cur   = (type==OP_BUYLIMIT)?Ask:Bid;
    double diff  = MathAbs(cur-price);
    if(diff<StopLevel)
      {
@@ -252,10 +252,11 @@ bool SendPending(int type,double price)
         }
      }
 
+   string comment = StringFormat("%s%d-G-%d",CommentTag,CycleID,level);
    int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
    for(int attempt=0; attempt<Retry_Max; attempt++)
      {
-      int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,CommentTag,MagicGrid,0,clrAqua);
+      int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,0,comment,MagicGrid,0,clrAqua);
       if(ticket>=0) return(true);
       Print("OrderSend failed: ",GetLastError());
       Sleep(Backoff_ms * (1<<attempt));
@@ -365,7 +366,7 @@ void UpdateSpreadMedian(int spread)
 //+------------------------------------------------------------------+
 double ArrayMedian(int &arr[],int n)
   {
-   if(n<=0) return(arr[0]);
+   if(n<=0) return(0);
    int tmp[];
    ArrayResize(tmp,n);
    for(int i=0;i<n;i++) tmp[i]=arr[i];
