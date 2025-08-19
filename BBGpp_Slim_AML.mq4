@@ -139,39 +139,26 @@ void OnTimer()
    double spread_pips = lastSpread * Point / Pip();
    Step = CalcStep(spread_pips);
 
+   int held=0,pending=0;
+   CountOrders(held,pending);
+   if(held>=MaxUnits || pending>MaxUnits-held)
+     {
+      CancelPendingOrders(1);
+      return;
+     }
+
    if(!SpreadGate(lastSpread)) return;
    if(!TimeGate()) return;
 
-   PlaceGridOrders();
+   PlaceGridOrders(held,pending);
   }
 
 //+------------------------------------------------------------------+
 //| グリッド敷設                                                      |
 //+------------------------------------------------------------------+
-void PlaceGridOrders()
+void PlaceGridOrders(int held,int pending)
   {
-   int held=0,pending=0;
-   // 保有本数と保留注文数をカウント
-   for(int i=OrdersTotal()-1;i>=0;i--)
-     {
-      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
-      int type=OrderType();
-      if(type==OP_BUY || type==OP_SELL) held++;
-      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT) pending++;
-     }
-   // 保有が上限以上なら保留を全取消して終了
-   if(held>=MaxUnits)
-     {
-      CancelPendingOrders(1);
-      return;
-     }
    int allowedPending = MaxUnits - held;
-   if(pending>allowedPending)
-     {
-      CancelPendingOrders(1);
-      return;
-     }
    if(pending>=allowedPending) return;
 
    double stepPoints = Step*Pip();
@@ -184,14 +171,33 @@ void PlaceGridOrders()
 
       if(needBuy && pending<allowedPending)
         {
-         SendPending(OP_BUYLIMIT,buyPrice,level);
+         if(SendPending(OP_BUYLIMIT,buyPrice,level))
+            pending++;
          return;
         }
       if(needSell && pending<allowedPending)
         {
-         SendPending(OP_SELLLIMIT,sellPrice,level);
+         if(SendPending(OP_SELLLIMIT,sellPrice,level))
+            pending++;
          return;
         }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| 保有/保留本数カウント                                             |
+//+------------------------------------------------------------------+
+void CountOrders(int &held,int &pending)
+  {
+   held=0;
+   pending=0;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      int type=OrderType();
+      if(type==OP_BUY || type==OP_SELL) held++;
+      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT) pending++;
      }
   }
 
