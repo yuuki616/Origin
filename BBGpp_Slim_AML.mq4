@@ -141,18 +141,18 @@ void OnTimer()
 
    int held=0,pending=0;
    CountOrders(held,pending);
-   // 保有が上限に達した場合は保留を全取消
+   // 保有が上限に達した場合は保留を整理（1ループ1アクション）
    if(held>=MaxUnits)
      {
-      if(pending>0) CancelPendingOrders(pending);
+      if(pending>0) CancelPendingOrders();
       return;
      }
 
    int allowedPending = MaxUnits - held;
    if(pending>allowedPending)
      {
-      // 過剰な保留注文を一度に整理
-      CancelPendingOrders(pending-allowedPending);
+      // 過剰な保留注文を1件ずつ整理
+      CancelPendingOrders();
       return;
      }
 
