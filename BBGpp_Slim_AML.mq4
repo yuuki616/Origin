@@ -89,6 +89,17 @@ datetime SpreadTimes[];
 // 操作回数制限
 datetime opsWindowStart=0;
 int      opsCount=0;
+// サイクル管理
+double stepMult=1.0;
+int    stepExpandCount=0;
+double cycleStartEquity=0;
+datetime cycleStartTime=0;
+
+// プロトタイプ
+void CloseOneOrder();
+bool CloseWithRetry(int ticket);
+bool CheckExitConditions();
+void RestartCycle();
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -112,6 +123,8 @@ int OnInit()
    Print("Init: Step=",Step," Pip=",Pip()," StopLevel=",StopLevel/Point,
          " FreezeLevel=",FreezeLevel/Point);
    EventSetMillisecondTimer(TimerInterval_ms);
+   cycleStartEquity = AccountEquity();
+   cycleStartTime   = TimeCurrent();
    return(INIT_SUCCEEDED);
   }
 
@@ -136,10 +149,29 @@ void OnTick()
 void OnTimer()
   {
    double spread_pips = lastSpreadPips;
-   Step = CalcStep(spread_pips);
+   Step = stepMult * CalcStep(spread_pips);
 
    int held=0,pending=0;
    CountOrders(held,pending);
+
+   if(cycle==CYCLE_CLOSING)
+     {
+      if(held>0 || pending>0)
+        {
+         CloseOneOrder();
+         return;
+        }
+      RestartCycle();
+      return;
+     }
+
+   if(CheckExitConditions())
+     {
+      CancelPendingOrders(1000);
+      cycle = CYCLE_CLOSING;
+      return;
+     }
+
    // 保有が上限に達した場合は保留を整理（1ループ1アクション）
    if(held>=MaxUnits)
      {
@@ -229,6 +261,48 @@ void CancelPendingOrders(int count=1)
   }
 
 //+------------------------------------------------------------------+
+//| 1件クローズ（含み益順）                                          |
+//+------------------------------------------------------------------+
+void CloseOneOrder()
+  {
+   double best= -1e10;
+   int bestTicket = -1;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      int type=OrderType();
+      if(type==OP_BUY || type==OP_SELL)
+        {
+         double p = OrderProfit()+OrderSwap();
+         if(p>best){ best=p; bestTicket=OrderTicket(); }
+        }
+     }
+   if(bestTicket!=-1) CloseWithRetry(bestTicket);
+  }
+
+//+------------------------------------------------------------------+
+//| OrderClose リトライ                                               |
+//+------------------------------------------------------------------+
+bool CloseWithRetry(int ticket)
+  {
+   if(!OpsAllowed()) return(false);
+   for(int attempt=0; attempt<Retry_Max; attempt++)
+     {
+      if(OrderSelect(ticket,SELECT_BY_TICKET))
+        {
+         double lot = OrderLots();
+         double price = (OrderType()==OP_BUY)?Bid:Ask;
+         int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
+         if(OrderClose(ticket,lot,price,slippage,clrRed)) return(true);
+        }
+      Print("OrderClose failed: ",GetLastError());
+      Sleep(Backoff_ms * (1<<attempt));
+     }
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
 //| 指定価格の保留注文有無                                            |
 //+------------------------------------------------------------------+
 bool FindPendingPrice(double price,int type)
@@ -312,6 +386,38 @@ bool OpsAllowed()
      }
    opsCount++;
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| サイクルトリガ判定                                               |
+//+------------------------------------------------------------------+
+bool CheckExitConditions()
+  {
+   double equity = AccountEquity();
+   double profit = equity - cycleStartEquity;
+   double ddPct = 100.0 * (cycleStartEquity - equity) / cycleStartEquity;
+   if(profit >= CycleTP_money) return(true);
+   if(ddPct  >= MaxDD_pct)     return true;
+   if(TimeCurrent() - cycleStartTime >= CycleTimeLimit_min*60) return(true);
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| サイクル再起動                                                   |
+//+------------------------------------------------------------------+
+void RestartCycle()
+  {
+   AnchorPrice = NormalizeDouble((Ask+Bid)/2,Digits);
+   cycleStartEquity = AccountEquity();
+   cycleStartTime   = TimeCurrent();
+   CycleID++;
+   if(stepExpandCount < 2)
+     {
+      stepMult *= 1.3;
+      stepExpandCount++;
+     }
+   Step = stepMult * CalcStep(lastSpreadPips);
+   cycle = CYCLE_RUNNING;
   }
 
 //+------------------------------------------------------------------+
