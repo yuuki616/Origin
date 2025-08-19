@@ -102,6 +102,12 @@ double cycleCost=0; // サイクル内の決済コスト累計
 datetime lastHistoryTime=0;
 int    microLifoDir=0;        // Micro-LIFO 連続方向
 int    microLifoStreak=0;     // Micro-LIFO 連続回数
+int    amlTicket=-1;          // AML 保有チケット
+datetime amlOpenTime=0;       // AML オープン時刻
+int    amlDir=0;              // AML 方向 1=Buy,-1=Sell
+datetime amlCooldownEnd=0;    // AML クールダウン終了時刻
+int    amlWhipsawCnt=0;       // AML 連敗数
+datetime amlWhipsawWindow=0;  // AML 連敗計測開始
 
 // プロトタイプ
 void CloseOneOrder();
@@ -114,6 +120,9 @@ void UpdateManualClosures();
 bool FreeMarginGate();
 bool FindPendingLevel(int level,int type);
 bool TryMicroLIFO(double spread_pips);
+bool HandleAML(double spread_pips,int held);
+void CancelAMLPending();
+double GetNetAverage(double &netUnits);
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -192,11 +201,11 @@ void OnTimer()
       return;
      }
 
-   if(CheckExitConditions())
-     {
-      cycle = CYCLE_CLOSING;
-      return;
-     }
+  if(CheckExitConditions())
+    {
+     cycle = CYCLE_CLOSING;
+     return;
+    }
 
    // 保有が上限に達した場合は保留を整理（1ループ1アクション）
   if(held>=MaxUnits)
@@ -206,6 +215,9 @@ void OnTimer()
     }
 
   if(TryMicroLIFO(spread_pips))
+     return;
+
+  if(HandleAML(spread_pips,held))
      return;
 
   if(!FreeMarginGate())
@@ -244,8 +256,16 @@ void OnTimer()
      reanchorStart = 0;
     }
 
-  if(!SpreadGate(spread_pips)) return;
-  if(!TimeGate()) return;
+  if(!SpreadGate(spread_pips))
+    {
+     CancelAMLPending();
+     return;
+    }
+  if(!TimeGate())
+    {
+     CancelAMLPending();
+     return;
+    }
 
    PlaceGridOrders(held,pending);
   }
@@ -288,14 +308,16 @@ void CountOrders(int &held,int &pending)
   {
    held=0;
    pending=0;
-   for(int i=OrdersTotal()-1;i>=0;i--)
-     {
+  for(int i=OrdersTotal()-1;i>=0;i--)
+    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      if(OrderSymbol()!=Symbol()) continue;
+      int magic=OrderMagicNumber();
+      if(magic!=MagicGrid && magic!=MagicAML) continue;
       int type=OrderType();
       if(type==OP_BUY || type==OP_SELL) held++;
-      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT) pending++;
-     }
+      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT || type==OP_BUYSTOP || type==OP_SELLSTOP) pending++;
+    }
   }
 
 //+------------------------------------------------------------------+
@@ -306,15 +328,61 @@ void CancelPendingOrders(int count=1)
    for(int i=OrdersTotal()-1; i>=0 && count>0; i--)
      {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      if(OrderSymbol()!=Symbol()) continue;
+      int magic=OrderMagicNumber();
+      if(magic!=MagicGrid && magic!=MagicAML) continue;
       int type=OrderType();
-      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT)
+      if(type==OP_BUYLIMIT || type==OP_SELLLIMIT || type==OP_BUYSTOP || type==OP_SELLSTOP)
         {
          int ticket=OrderTicket();
          DeleteWithRetry(ticket);
+         if(ticket==amlTicket) { amlTicket=-1; aml_state=AML_OFF; }
          count--;
         }
+    }
+  }
+
+//+------------------------------------------------------------------+
+//| AML保留注文の全取消                                             |
+//+------------------------------------------------------------------+
+void CancelAMLPending()
+  {
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicAML) continue;
+      int type=OrderType();
+      if(type==OP_BUYSTOP || type==OP_SELLSTOP)
+        {
+         int ticket=OrderTicket();
+         DeleteWithRetry(ticket);
+         if(ticket==amlTicket) { amlTicket=-1; aml_state=AML_OFF; }
+        }
      }
+  }
+
+//+------------------------------------------------------------------+
+//| ネット平均価格とユニット数                                       |
+//+------------------------------------------------------------------+
+double GetNetAverage(double &netUnits)
+  {
+   double buyLot=0,sellLot=0,buyVal=0,sellVal=0;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
+      if(OrderSymbol()!=Symbol()) continue;
+      int magic=OrderMagicNumber();
+      if(magic!=MagicGrid && magic!=MagicAML) continue;
+      int type=OrderType();
+      if(type==OP_BUY)  { double lot=OrderLots(); buyLot+=lot;  buyVal+=lot*OrderOpenPrice(); }
+      if(type==OP_SELL) { double lot=OrderLots(); sellLot+=lot; sellVal+=lot*OrderOpenPrice(); }
+     }
+   double diff = buyLot - sellLot;
+   netUnits = MathAbs(diff)/Lot_U;
+   if(diff>0 && buyLot>0) return(buyVal/buyLot);
+   if(diff<0 && sellLot>0) return(sellVal/sellLot);
+   netUnits=0;
+   return(0);
   }
 
 //+------------------------------------------------------------------+
@@ -324,18 +392,20 @@ void CloseOneOrder()
   {
    double best= -1e10;
    int bestTicket = -1;
-   for(int i=OrdersTotal()-1;i>=0;i--)
-     {
+  for(int i=OrdersTotal()-1;i>=0;i--)
+    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      if(OrderSymbol()!=Symbol()) continue;
+      int magic=OrderMagicNumber();
+      if(magic!=MagicGrid && magic!=MagicAML) continue;
       int type=OrderType();
       if(type==OP_BUY || type==OP_SELL)
         {
          double p = OrderProfit()+OrderSwap();
          if(p>best){ best=p; bestTicket=OrderTicket(); }
         }
-     }
-   if(bestTicket!=-1) CloseWithRetry(bestTicket,false);
+    }
+  if(bestTicket!=-1) CloseWithRetry(bestTicket,false);
   }
 
 //+------------------------------------------------------------------+
@@ -372,14 +442,40 @@ void RegisterClosure(int ticket,double spreadClose,bool addCb)
    if(!OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY)) return;
    double sc = spreadClose;
    if(sc<0) sc = lastSpreadPips;
-   double pv   = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
-   double comm = MathAbs(OrderCommission());
-   cycleCost  += (sc + 0.1) * pv + comm;
-   double net = OrderProfit() + OrderSwap() + OrderCommission();
-   if(addCb && net>0)
-      CycleBuffer += Tau_CB * net;
-   datetime ct = OrderCloseTime();
-   if(ct>lastHistoryTime) lastHistoryTime = ct;
+  double pv   = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
+  double comm = MathAbs(OrderCommission());
+  cycleCost  += (sc + 0.1) * pv + comm;
+  double net = OrderProfit() + OrderSwap() + OrderCommission();
+  if(addCb && net>0)
+     CycleBuffer += Tau_CB * net;
+  datetime ct = OrderCloseTime();
+  if(ct>lastHistoryTime) lastHistoryTime = ct;
+  int magic = OrderMagicNumber();
+  if(magic==MagicAML)
+    {
+     amlTicket=-1;
+     datetime now = TimeCurrent();
+     if(net<0)
+       {
+        if(now - amlWhipsawWindow > AML_Whipsaw_Window_min*60)
+          { amlWhipsawCnt=0; amlWhipsawWindow=now; }
+        amlWhipsawCnt++;
+        if(amlWhipsawCnt >= AML_Whipsaw_Losses)
+          {
+           amlCooldownEnd = now + AML_Whipsaw_Cooldown_min*60;
+           amlWhipsawCnt=0;
+           aml_state=AML_COOLDOWN;
+          }
+        else
+          aml_state=AML_OFF;
+       }
+     else
+       {
+        amlWhipsawCnt=0;
+        amlWhipsawWindow=now;
+        aml_state=AML_OFF;
+       }
+    }
   }
 
 //+------------------------------------------------------------------+
@@ -387,14 +483,16 @@ void RegisterClosure(int ticket,double spreadClose,bool addCb)
 //+------------------------------------------------------------------+
 void UpdateManualClosures()
   {
-   for(int i=OrdersHistoryTotal()-1;i>=0;i--)
-     {
+  for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+    {
       if(!OrderSelect(i,SELECT_BY_POS,MODE_HISTORY)) continue;
-      if(OrderSymbol()!=Symbol() || OrderMagicNumber()!=MagicGrid) continue;
+      if(OrderSymbol()!=Symbol()) continue;
+      int magic=OrderMagicNumber();
+      if(magic!=MagicGrid && magic!=MagicAML) continue;
       datetime ct = OrderCloseTime();
       if(ct<=lastHistoryTime || ct<cycleStartTime) break;
       RegisterClosure(OrderTicket(),-1,false);
-     }
+    }
   }
 
 //+------------------------------------------------------------------+
@@ -461,6 +559,94 @@ bool TryMicroLIFO(double spread_pips)
    if(dir==microLifoDir) microLifoStreak++;
    else { microLifoDir=dir; microLifoStreak=1; }
    return CloseWithRetry(ticket,true);
+  }
+
+//+------------------------------------------------------------------+
+//| AML処理                                                          |
+//+------------------------------------------------------------------+
+bool HandleAML(double spread_pips,int held)
+  {
+   if(!AML_Enable) return(false);
+   datetime now = TimeCurrent();
+   if(now < amlCooldownEnd) return(false);
+
+   if(amlTicket>0)
+     {
+      if(OrderSelect(amlTicket,SELECT_BY_TICKET))
+        {
+         int type = OrderType();
+         if(type==OP_BUY || type==OP_SELL)
+           {
+            if(amlOpenTime==0) amlOpenTime = OrderOpenTime();
+            if(now - amlOpenTime >= AML_TTL_min*60)
+              {
+               if(CloseWithRetry(amlTicket,true))
+                 {
+                  amlTicket=-1; aml_state=AML_OFF;
+                  return(true);
+                 }
+              }
+           }
+         else if(type==OP_BUYSTOP || type==OP_SELLSTOP)
+           {
+            if(!SpreadGate(spread_pips) || !TimeGate())
+              {
+               if(DeleteWithRetry(amlTicket))
+                 {
+                  amlTicket=-1; aml_state=AML_OFF;
+                  return(true);
+                 }
+              }
+           }
+         return(false);
+        }
+      else
+        {
+         amlTicket=-1; aml_state=AML_OFF;
+         return(false);
+        }
+     }
+
+   if(!SpreadGate(spread_pips) || !TimeGate()) return(false);
+   if(held >= MaxUnits*0.7) return(false);
+
+   double netUnits=0;
+   double netAvg = GetNetAverage(netUnits);
+   if(netUnits<=0) return(false);
+   double mid = (Ask+Bid)/2.0;
+   double dist = MathAbs(mid - netAvg) / Pip();
+   if(dist < 5*Step) return(false);
+
+   int hiIdx = iHighest(Symbol(),PERIOD_M1,MODE_HIGH,10,0);
+   int loIdx = iLowest(Symbol(),PERIOD_M1,MODE_LOW,10,0);
+   double high = iHigh(Symbol(),PERIOD_M1,hiIdx);
+   double low  = iLow(Symbol(),PERIOD_M1,loIdx);
+   int dir = (mid>netAvg)?1:-1;
+   if(dir>0 && mid<high) return(false);
+   if(dir<0 && mid>low)  return(false);
+
+   if(!OpsAllowed()) return(false);
+   double level = AML_Levels[0];
+   int type = (dir>0)?OP_BUYSTOP:OP_SELLSTOP;
+   double price = (dir>0)?NormalizeDouble(Ask + level*Step*Pip(),Digits)
+                        : NormalizeDouble(Bid - level*Step*Pip(),Digits);
+   double tp = (dir>0)?price + AML_TP_SpreadMult*spread_pips*Pip()
+                      : price - AML_TP_SpreadMult*spread_pips*Pip();
+   double lot = NormalizeLot(0.01);
+   string comment = BuildComment("AML",1);
+   int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
+   for(int attempt=0; attempt<Retry_Max; attempt++)
+     {
+      int ticket = OrderSend(Symbol(),type,lot,price,slippage,0,tp,comment,MagicAML,0,clrOrange);
+      if(ticket>=0)
+        {
+         amlTicket=ticket; amlDir=dir; aml_state=AML_LV1_ACTIVE; amlOpenTime=0;
+         return(true);
+        }
+      Print("OrderSend AML failed: ",GetLastError());
+      Sleep(Backoff_ms * (1<<attempt));
+     }
+   return(false);
   }
 
 //+------------------------------------------------------------------+
