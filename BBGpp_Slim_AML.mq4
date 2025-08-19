@@ -53,7 +53,7 @@ input int      Retry_Max          = 5;
 input int      Backoff_ms         = 250;
 input double   MaxSlippage_pips   = 0.5;
 input int      MagicBase          = 246800;
-input string   CommentTag         = "BBG+";
+input string   CommentTag         = "BBG++";
 input bool     Persist_Enable     = true;
 input int      OpsPerMinute_SoftCap = 12;
 
@@ -74,6 +74,9 @@ double AnchorPrice;
 int    CycleID=0;
 int    symbolHash=0;
 int    MagicGrid=0;
+int    MagicMicro=0;
+int    MagicTrim=0;
+int    MagicAML=0;
 Regime regime=REGIME_NORMAL;
 Cycle  cycle=CYCLE_RUNNING;
 AMLState aml_state=AML_OFF;
@@ -101,6 +104,7 @@ void CloseOneOrder();
 bool CloseWithRetry(int ticket);
 bool CheckExitConditions();
 void RestartCycle();
+string BuildComment(string role,int idx);
 
 //+------------------------------------------------------------------+
 //| 初期化                                                            |
@@ -108,7 +112,10 @@ void RestartCycle();
 int OnInit()
   {
    symbolHash = SymbolHash(Symbol());
-   MagicGrid = MagicBase + 10 + symbolHash;
+   MagicGrid  = MagicBase + 10 + symbolHash;
+   MagicMicro = MagicBase + 20 + symbolHash;
+   MagicTrim  = MagicBase + 30 + symbolHash;
+   MagicAML   = MagicBase + 40 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
    lastSpreadPips = MarketInfo(Symbol(),MODE_SPREAD) * Point / Pip();
    ArrayResize(Spreads,1);
@@ -351,7 +358,7 @@ bool SendPending(int type,double price,int level)
         }
      }
 
-   string comment = StringFormat("%s%d-G-%d",CommentTag,CycleID,level);
+   string comment = BuildComment("G",level);
    int slippage = (int)MathRound(MaxSlippage_pips * Pip() / Point);
    for(int attempt=0; attempt<Retry_Max; attempt++)
      {
@@ -545,6 +552,14 @@ double NormalizeLot(double lot)
    if(l<MinLot) l=MinLot;
    int lotDigits = (int)MathRound(-MathLog10(LotStep));
    return(NormalizeDouble(l,lotDigits));
+  }
+
+//+------------------------------------------------------------------+
+//| 注文コメント生成                                                  |
+//+------------------------------------------------------------------+
+string BuildComment(string role,int idx)
+  {
+   return(StringFormat("%s%d-%s-%d",CommentTag,CycleID,role,idx));
   }
 
 //+------------------------------------------------------------------+
