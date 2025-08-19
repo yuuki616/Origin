@@ -82,9 +82,9 @@ double StopLevel=0;
 double FreezeLevel=0;
 double LotStep=0;
 double MinLot=0;
-int    lastSpread=0;          // 直近スプレッド(ポイント)
-// スプレッド履歴
-int      Spreads[];
+double lastSpreadPips=0;      // 直近スプレッド(pips)
+// スプレッド履歴(pips)
+double   Spreads[];
 datetime SpreadTimes[];
 // 操作回数制限
 datetime opsWindowStart=0;
@@ -98,14 +98,13 @@ int OnInit()
    symbolHash = SymbolHash(Symbol());
    MagicGrid = MagicBase + 10 + symbolHash;
    AnchorPrice = NormalizeDouble( (Ask+Bid)/2, Digits );
-   lastSpread = (int)MarketInfo(Symbol(),MODE_SPREAD);
+   lastSpreadPips = MarketInfo(Symbol(),MODE_SPREAD) * Point / Pip();
    ArrayResize(Spreads,1);
    ArrayResize(SpreadTimes,1);
-   Spreads[0] = lastSpread;
+   Spreads[0] = lastSpreadPips;
    SpreadTimes[0] = TimeCurrent();
-   SpreadMedian = lastSpread;
-   double spread_pips_init = lastSpread * Point / Pip();
-   Step = CalcStep(spread_pips_init);
+   SpreadMedian = lastSpreadPips;
+   Step = CalcStep(lastSpreadPips);
    StopLevel  = MarketInfo(Symbol(),MODE_STOPLEVEL)  * Point;
    FreezeLevel= MarketInfo(Symbol(),MODE_FREEZELEVEL)* Point;
    LotStep    = MarketInfo(Symbol(),MODE_LOTSTEP);
@@ -127,8 +126,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
   {
-   lastSpread = (int)((Ask-Bid)/Point);
-   UpdateSpreadMedian(lastSpread);
+   lastSpreadPips = (Ask-Bid) / Pip();
+   UpdateSpreadMedian(lastSpreadPips);
   }
 
 //+------------------------------------------------------------------+
@@ -136,7 +135,7 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnTimer()
   {
-   double spread_pips = lastSpread * Point / Pip();
+   double spread_pips = lastSpreadPips;
    Step = CalcStep(spread_pips);
 
    int held=0,pending=0;
@@ -156,7 +155,7 @@ void OnTimer()
       return;
      }
 
-   if(!SpreadGate(lastSpread)) return;
+   if(!SpreadGate(spread_pips)) return;
    if(!TimeGate()) return;
 
    PlaceGridOrders(held,pending);
@@ -318,10 +317,10 @@ bool OpsAllowed()
 //+------------------------------------------------------------------+
 //| SpreadGate                                                       |
 //+------------------------------------------------------------------+
-bool SpreadGate(int spread)
+bool SpreadGate(double spread_pips)
   {
    double cap = SpreadMedian*SpreadCapMult;
-   if(spread>cap) return(false);
+   if(spread_pips>cap) return(false);
    return(true);
   }
 
@@ -348,7 +347,7 @@ bool TimeGate()
 //+------------------------------------------------------------------+
 //| スプレッド中央値更新                                             |
 //+------------------------------------------------------------------+
-void UpdateSpreadMedian(int spread)
+void UpdateSpreadMedian(double spread)
   {
    datetime now = TimeCurrent();
    int n = ArraySize(Spreads);
@@ -379,10 +378,10 @@ void UpdateSpreadMedian(int spread)
 //+------------------------------------------------------------------+
 //| 配列中央値計算                                                   |
 //+------------------------------------------------------------------+
-double ArrayMedian(int &arr[],int n)
+double ArrayMedian(double &arr[],int n)
   {
    if(n<=0) return(0);
-   int tmp[];
+   double tmp[];
    ArrayResize(tmp,n);
    for(int i=0;i<n;i++) tmp[i]=arr[i];
    ArraySort(tmp);
