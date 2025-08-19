@@ -71,6 +71,7 @@ double Step;
 double SpreadMedian;
 double CycleBuffer=0;
 double AnchorPrice;
+datetime reanchorStart=0;
 int    CycleID=0;
 int    symbolHash=0;
 int    MagicGrid=0;
@@ -195,16 +196,37 @@ void OnTimer()
       return;
      }
 
-   int allowedPending = MaxUnits - held;
-   if(pending>allowedPending)
-     {
+  int allowedPending = MaxUnits - held;
+  if(pending>allowedPending)
+    {
       // 過剰な保留注文を1件ずつ整理
       CancelPendingOrders();
       return;
-     }
+    }
 
-   if(!SpreadGate(spread_pips)) return;
-   if(!TimeGate()) return;
+  // Re-Anchor チェック
+  double mid = (Ask+Bid)/2.0;
+  double distPips = MathAbs(mid - AnchorPrice) / Pip();
+  if(distPips >= Reanchor_DistMult * Step)
+    {
+     if(reanchorStart==0)
+       reanchorStart = TimeCurrent();
+     else if(TimeCurrent() - reanchorStart >= Reanchor_Hold_min*60)
+       {
+        CancelPendingOrders(1000);
+        AnchorPrice = NormalizeDouble(mid,Digits);
+        reanchorStart = 0;
+        Print("ReAnchor");
+        return;
+       }
+    }
+  else
+    {
+     reanchorStart = 0;
+    }
+
+  if(!SpreadGate(spread_pips)) return;
+  if(!TimeGate()) return;
 
    PlaceGridOrders(held,pending);
   }
