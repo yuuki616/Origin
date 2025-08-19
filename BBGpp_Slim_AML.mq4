@@ -353,11 +353,12 @@ void RegisterClosure(int ticket,double spreadClose)
    if(!OrderSelect(ticket,SELECT_BY_TICKET,MODE_HISTORY)) return;
    double sc = spreadClose;
    if(sc<0) sc = lastSpreadPips;
-   double pv = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
+   double pv   = MarketInfo(Symbol(),MODE_TICKVALUE) * Pip() / Point;
    double comm = MathAbs(OrderCommission());
-   cycleCost += (sc + 0.1) * pv + comm;
+   cycleCost  += (sc + 0.1) * pv + comm;
    double net = OrderProfit() + OrderSwap() + OrderCommission();
-   CycleBuffer += Tau_CB * net;
+   if(net>0)
+      CycleBuffer += Tau_CB * net;
    datetime ct = OrderCloseTime();
    if(ct>lastHistoryTime) lastHistoryTime = ct;
   }
